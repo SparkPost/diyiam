@@ -1,0 +1,235 @@
+#!/bin/bash
+# realpath() included to allow portability to macos {{{
+# adapted from https://github.com/mkropat/sh-realpath
+# Used under https://github.com/mkropat/sh-realpath/blob/master/LICENSE.txt
+realpath() {
+    canonicalize_path "$(resolve_symlinks "$1")"
+}
+
+resolve_symlinks() {
+    _resolve_symlinks "$1"
+}
+
+_resolve_symlinks() {
+    _assert_no_path_cycles "$@" || return
+
+    local dir_context path
+    if path=$(readlink -- "$1")
+    then
+        dir_context=$(dirname -- "$1")
+        _resolve_symlinks "$(_prepend_dir_context_if_necessary "$dir_context" "$path")" "$@"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+_prepend_dir_context_if_necessary() {
+    if [ "$1" = . ]; then
+        printf '%s\n' "$2"
+    else
+        _prepend_path_if_relative "$1" "$2"
+    fi
+}
+
+_prepend_path_if_relative() {
+    case "$2" in
+        /* ) printf '%s\n' "$2" ;;
+         * ) printf '%s\n' "$1/$2" ;;
+    esac
+}
+
+_assert_no_path_cycles() {
+    local target path
+
+    target=$1
+    shift
+
+    for path in "$@"; do
+        if [ "$path" = "$target" ]; then
+            return 1
+        fi
+    done
+}
+
+canonicalize_path() {
+    if [ -d "$1" ]; then
+        _canonicalize_dir_path "$1"
+    else
+        _canonicalize_file_path "$1"
+    fi
+}
+
+_canonicalize_dir_path() {
+    (cd "$1" 2>/dev/null && pwd -P)
+}
+
+_canonicalize_file_path() {
+    local dir file
+    dir=$(dirname -- "$1")
+    file=$(basename -- "$1")
+    (cd "$dir" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$file")
+}
+# }}} end of realpath
+
+die() {
+    local -i code
+    code=$1
+    shift
+    echo "$@" >&2
+    # shellcheck disable=SC2086
+    exit $code
+}
+
+me=${BASH_SOURCE[0]}
+# Full path to this script
+here=$(cd "$(dirname "$me")" && pwd)
+# Parent directory of this script
+base=$(dirname "$here")
+[ -L "$me" ] && { 
+    [ -z "$DEPLOY_DEBUG" ] || echo "$me" is a symlink >&2
+    # Actual path to this script (resolves symlink)
+    real_me_path=$(realpath "$me")
+}
+link=$(readlink "$me")
+# Where this script is linked from (one-level)
+linkdir=$(cd "$(dirname "$link")" && pwd)
+: "${real_me_path:=$me}"
+real_me_dir=$(dirname "$real_me_path")
+# The global directory
+global="$(dirname "$real_me_dir")"
+# This should always be 'Global'
+global_name=$(basename "$global")
+
+if [ "$global_name" != 'Global' ]
+then
+    die 1 "This repository is meant to be cloned as ./Global in the root of a terraform module repo, got ${global_name}"
+fi
+
+[ -z "$DEPLOY_DEBUG" ] || echo "Running with a root of $base" >&2
+
+# Look for `s3_state_account` in the root of this tree, which determines which account
+# the s3 state file will be created/maintained in
+if [ -f "s3_state_account" ]
+then
+    state_account=$(<s3_state_account)
+elif [ -f "$base/s3_state_account" ]
+then
+    state_account=$(<"$base"/s3_state_account)
+else
+    state_account=<AWS STATE ACCOUNT>
+fi
+
+# Look for `team_name` in the root of this tree to set the team variable (used in s3 state
+# to determine the correct bucket)
+if [ -f "$base/team_name" ]
+then
+    team_name=$(<"$base/team_name")
+elif [ -f "team_name" ]
+then
+    team_name=$(<"team_name")
+else
+    team_name=CC
+fi
+team="${TEAM_NAME:-$team_name}"
+
+
+# Template for state.tf
+state_template() {
+    local key_path=$1
+    echo "Using $key_path for state file" >&2
+    bucket_name="<S3 STATE BUCKET>"
+    if [ "$state_account" != "<AWS S3 STATE ACCOUNT>" ]
+    then
+        bucket_name=$bucket_name-$state_account
+    fi
+    read -r -d '' STATE <<-TF
+terraform {
+  backend "s3" {
+    bucket         = "$bucket_name"
+    dynamodb_table = "terraform-dynamodb-locks"
+    key            = "$key_path/terraform.tfstate"
+    region         = "us-west-2"
+    encrypt        = true
+    profile        = "$state_account"
+  }
+}
+TF
+    echo "$STATE" > state.tf
+}
+
+create_state() {
+    # Look for `module_prefix` in the root of this tree to set the tf_module_prefix variable (used in s3 state
+    # to set the key_path)
+    if [ -f "$base/tf_module_prefix" ]
+    then
+        tf_module_prefix=$(<"$base/tf_module_prefix")
+    elif [ -f "tf_module_prefix" ]
+    then
+        tf_module_prefix=$(<"tf_module_prefix")
+    fi
+    : "${TF_MODULE_PREFIX:=$tf_module_prefix}"
+
+    if [ -f state.tf ]
+    then
+        echo "state.tf already exists. Not overwriting" >&2
+        exit 1
+    fi
+    local my_path
+    local real_root
+    local key_path
+    my_path="$(realpath "$(pwd)")" 
+    real_root="$(realpath "$base")"
+    if [ -n "$TF_MODULE_PREFIX" ]
+    then
+      key_path="$team/$TF_MODULE_PREFIX/${my_path#$real_root/}"
+    else
+      key_path="$team/${my_path#$real_root/}"
+    fi
+    state_template "$key_path"
+}
+
+action=$1
+[ -n "$action" ] || die 1 "Must specify an action"
+
+if [[ "$linkdir" == "$here" ]]
+then
+    die 2 "Cannot use a parent environment to deploy ${base}"
+fi
+
+# Create state if it does not exist
+if ! ls state.tf &>/dev/null
+then
+    echo "No state file found. Creating one now" >&2
+    create_state
+fi
+
+# Special actions for 'init'
+if [ "$action" = "init" ]
+then
+    # Link everything in ../shared
+    if [ -d ../shared ]
+    then
+        ln -s ../shared/* ./ 2>/dev/null
+    fi
+fi
+
+# Look for guardrails if deploy-hooks.sh is found
+if [ -f "$global/lib/deploy-hooks.sh" ]
+then
+    # shellcheck source=/dev/null
+    . "$global/lib/deploy-hooks.sh"
+    if ! deploy_hooks "$action" "$here" "$base" "$global"
+    then
+        die $? "Deploy hook failed"
+    fi
+fi
+
+# If the $PASS_PROFILE_SUBDIR environment variable is set, deploy will use `prof`
+# to wrap all commands. `prof` assumes your credentials are stored in ~/.aws/credentials.gpg
+if [ -n "$PASS_PROFILE_SUBDIR" ]
+then
+    exec prof terraform "$@"
+else
+    exec terraform "$@"
+fi
+# vim: set et sw=4 ts=4 sts=4 syntax=sh foldmethod=marker :

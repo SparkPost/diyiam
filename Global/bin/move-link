@@ -1,0 +1,65 @@
+#!/usr/bin/env ruby
+require 'pathname'
+require 'fileutils'
+require 'highline/import'
+# require 'pry' # Only enable for debugging
+
+current_files = ARGV[0..ARGV.size - 2].map { |p| Pathname(p) }
+new_location = Pathname(ARGV.last)
+
+raise "#{new_location} must be an existing directory" unless new_location.exist? && new_location.directory?
+
+def confirm(question)
+  ask(question) do |q|
+    q.character = true  # Only reads one character
+    q.echo      = false # Don't echo the response
+    q.validate  = /^[yn]/i
+    q.default   = 'No'
+  end
+end
+
+def move_link(link, new_path)
+  return(warn "Not moving #{link}, it is not dangling") if link.exist?
+
+  new_link = new_path.relative_path_from(link.dirname)
+  warn "Linking #{new_link} to #{link}"
+  FileUtils.ln_s(*[new_link, link].map(&:to_s), force: true)
+end
+
+def move_file_and_link(current_file, new_path, links)
+  puts "Links currently pointed at #{current_file}: #{links.map(&:to_s)}"
+  yn = confirm "Do you want to move #{current_file} to #{new_path} and repoint all these links? "
+  return(warn "Ok, not moving #{current_file}") unless yn.match?(/^y/i)
+
+  puts 'Ok, moving'
+  FileUtils.mv(current_file, new_path)
+  new_file = new_path.join(current_file.basename.to_s)
+  links.map { |l| move_link l, new_file }
+end
+
+# Takes into account relative links that include the new path
+def linked_direct?(path, current)
+  if path.readlink.to_s.sub(Pathname.new('.').relative_path_from(path.dirname).to_s + '/', '') == current.to_s
+    return true
+  end
+
+  link = path.readlink.to_s
+  just_relative = link[%r{(\.\./)+}]
+  just_path     = link.sub(%r{(\.\./)+}, '')
+  path.dirname.join(just_relative).join(just_path) == current
+end
+
+def move_links(current_file, new_path)
+  return(warn "#{current_file} does not exist") unless current_file.exist?
+  return(warn "#{current_file} is a symlink. Moving symlinks is not supported, only files") if current_file.symlink?
+
+  links_to_current = []
+  Pathname('.').find do |p|
+    next unless p.exist? && p.symlink? && p.realdirpath == current_file.expand_path
+
+    links_to_current << p if linked_direct?(p, current_file)
+  end
+  move_file_and_link(current_file, new_path, links_to_current)
+end
+
+current_files.each { |f| move_links f, new_location }

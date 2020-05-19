@@ -1,0 +1,84 @@
+= IAM as code provided by your local friendly SRE.
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :information_source:
+:important-caption: :heavy_exclamation_mark:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+:toc:
+
+Teams have their permissions defined in directories under (preferrably) 2-3 letter identifiers. Team
+identifiers must be in all caps, with `/^[-_A-Z]$/` (ALL CAPS plus _ and -) being the only allowable characters.
+
+== Setup
+
+* Modify the following files:
+** /s3_state_account
+** /tf_module_prefix
+** /Global/globals.tf
+** /Global/providers.tf
+* Get started!
+
+== Usage
+
+NOTE: See Global/Readme.adoc for tl;dr on the module which this repository utilizes.
+
+=== Set Team Directory Structure:
+
+.Example Tree
+* Team
+** svc_policies - Each file is a policy to apply to a service role of the same name.
+*** rolename.json, contains policy for particular role.
+** svc_roles - Each file is a service role to be applied to a particular service.
+*** rolename.json, contains config for service role creation.
+** usr_policies - Service files for user level IAM access to various AWS services.
+*** awsservice.json, contains the named service access for users accounts.
+** usr_list - List of users to define who belongs in this team.
+
+IMPORTANT: Each `svc_policies/file.json` must have a corresponding `svc_roles/file.json` (same name).
+
+TIP: You can use the `utils/group_skeleton.sh awsprofile team` utility to create the skeleton structure.
+
+.Full Example Tree
+----
+TEAM
+├── svc_policies
+│   ├── Policy1.json
+│   └── Policy2.json
+├── svc_roles
+│   ├── Role1.json
+│   └── Role2.json
+├── usr_list
+├── usr_policies
+│   └── User_Policy1.json
+
+3 directories, 13 files
+----
+
+== Currently available tooling
+
+=== `utils/group_skeleton.sh`
+* Builds directory structure for team and creates groups matching current design.
+** `utils/group_skeleton.sh awsprofile team`
+
+=== `./apply_perms.sh`
+* Applies permissions for TEAM as defined by the users, policies, and roles in the tree.
+** Linked to the `Global/bin/apply_perms.sh` through a git submodule to `terraform_IAM_shared`.
+** `./apply_perms.sh AWS_PROFILE TEAM`
+
+=== `./import_users.sh`
+* Used to import a user or users into a team module's state file, useful when moving users from team to team
+** Linked to the `Global/bin/import_users.sh` through a git submodule to `terraform_IAM_shared`.
+** `./import_users.sh NEW_TEAM user1@example.com user2@example.com`
+
+=== `./detach_users.sh`
+* The opposite of `./import_users.sh`, used for detaching users from a team.
+** Linked to the `Global/bin/detach_users.sh` through a git submodule to `terraform_IAM_shared`.
+** `./detach_users.sh OLD_TEAM user1@example.com user2@example.com`
+
+CAUTION: Detaching and importing users does _not_ affect the AWS user nor group resources, it only changes the
+         (terraform) module's state data. `./apply_perms PROFILE TEAM` still must be run for both NEW_TEAM and
+         OLD_TEAM to update the resources in AWS (IAM).
+
+         

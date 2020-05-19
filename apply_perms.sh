@@ -1,0 +1,1 @@
+Global/bin/apply_perms.sh

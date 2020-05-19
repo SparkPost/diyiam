@@ -1,0 +1,107 @@
+# Shared IAM Terraform Repository
+:toc:
+
+## Purpose
+
+This repository is meant to contain modules and scripts to be used by (multiple) iam_mgmt repositories.
+
+
+## Set Up a new Repository
+
+In an iam_mgmt repository, this repository should be added as a submodule, in the root of the tree, as Global
+
+----
+% cd <repo>
+% git submodule add <GH Global URL> Global
+----
+
+Once the submodule exists, it can be initialized with the following
+
+----
+% ./Global/bin/init-repo.sh AWS_PROFILE
+----
+
+IMPORTANT: init-repo.sh is not guaranteed idempotent. It should only be run once on any repository.
+
+Where AWS_PROFILE is the profile alias for the account managed by the IAM repo.
+
+## Usage
+
+Now that the structure has been set up, the ./svc_role_policy.sh script can be used to apply the policies in the repository to AWS.
+
+### Applying permisions for a team
+
+.Apply Permissions
+----
+% ./apply_perms.sh AWS_PROFILE TEAM
+----
+
+To use this without the prompt to apply the changes, add -auto-approve to the command
+
+.Apply Pemissions Without being prompted
+----
+% ./apply_perms.sh AWS_PROFILE TEAM -auto-approve
+----
+
+NOTE: -auto-approve _must_ be at the end of the command, after PROFILE and TEAM. Any options specified after TEAM are passed directly to terraform.
+
+### Moving users from one team to another
+
+When the `usr_list` for a team is updated, special precautions must be taken when applying permissions to ensure
+users are not removed and re-created (unless this is the desired outcome). Watch carefully the output of ./apply_perms.sh
+before approving the plan to ensure users that you do not expect to be deleted are not deleted. A common case for this will
+be when users move from one team to another.
+
+When you see this condition, you essentially have to tell terraform where the users are going before they get there. These two utilities make it easier, and it can take multiple users for bulk moves.
+
+NOTE: Since these commands only modify state, they do not need an AWS_PROFILE exported or passed as arguments, as the state file
+      aws profile is stored in state.tf of the team's module.
+
+.Remove from old group
+----
+% ./detach_users.sh OLD_TEAM user1 user2 user3 ...
+----
+
+.Import to new group
+----
+% ./import_users NEW_TEAM user1 user2 user3 ...
+----
+
+Since these are just managing state and not resource, they can be run in either order, but _both_ must be run before then applying the changes to both teams
+
+.Apply changes to OLD_TEAM, then NEW_TEAM
+----
+% ./apply_perms.sh AWS_PROFILE OLD_TEAM
+% ./apply_perms.sh AWS_PROFILE NEW_TEAM
+----
+
+## Structure Of the Global submodule (tl;dr)
+
+----
+Global
+├── bin
+│   ├── apply_perms.sh
+│   ├── deploy
+│   ├── detach_users.sh
+│   ├── import_group_memberships.awk
+│   ├── import_group_policy_attachments.awk
+│   ├── import_perms.sh
+│   ├── import_users.sh
+│   ├── init-repo.sh
+│   ├── move-link
+│   └── svc_role_policy.sh -> apply_perms.sh
+├── globals.tf
+├── Modules
+│   ├── role_and_policy_module
+│   │   └── roles_and_policies.tf
+│   └── user_group_module
+│       ├── main.tf
+│       └── variables.tf
+├── providers.tf
+├── Readme.adoc
+└── shared
+    ├── main.tf
+    └── variables.tf
+
+5 directories, 18 files
+----
